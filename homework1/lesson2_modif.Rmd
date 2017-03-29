@@ -1,7 +1,7 @@
 ---
 title: "Rna-seq analysis"
-author: "kzaitsev"
-date: "March 11, 2017"
+author: "Ivan Pavlov"
+date: "March 29, 2017"
 output: html_document
 ---
 
@@ -11,6 +11,8 @@ library(ggplot2)
 library(clusterProfiler)
 library(org.Hs.eg.db)
 library(pheatmap)
+library(VennDiagram)
+library(dplyr)
 options(width=120)
 ```
 
@@ -23,14 +25,21 @@ counts <- read.csv("GSE89225_Illumina_counts.csv", row.names=1)
 conditions <- read.csv("conditions.csv", row.names=1)
 mart <- read.table("human_mart.txt", sep="\t", header=1, check.names = F)
 
-print(counts[1:6, 1:2])
-dim(counts)
+# print(counts[1:6, 1:2])
+# dim(counts)
+# 
+# head(conditions)
+# dim(conditions)
+# 
+# head(mart)
+# dim(mart)
+```
 
-head(conditions)
-dim(conditions)
+# Remove outlier
 
-head(mart)
-dim(mart)
+```{r rm_outlier}
+counts <- select(counts, -(treg_NBP_patient3))
+conditions <- conditions[rownames(conditions) != "treg_NBP_patient3", ]
 ```
 
 # RNA-seq
@@ -89,6 +98,7 @@ plot
 DESeq2 -- это царь-библиотека необходимая для работы с данными RNA-seq. Тут и дифференциальная экспрессия, и нормализации, и PCA-plots.
 
 ```{r deseq_prep, cache=TRUE, message=FALSE}
+# Tregs vs Tconv
 dds <- DESeqDataSetFromMatrix(countData = counts,
                               colData = conditions,
                               design = ~ tissue + cells)
@@ -97,6 +107,14 @@ dds <- DESeq(dds)
 vst_dds <- vst(dds)
 counts.norm <- assay(vst_dds)
 
+# Breast tumor vs Normal breat tissue
+dds2 <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = conditions,
+                              design = ~ cells + tissue)
+dds2 <- dds2[rowSums(counts(dds2)) > 20, ]
+dds2 <- DESeq(dds2)
+vst_dds2 <- vst(dds2)
+counts.norm2 <- assay(vst_dds2)
 ```
 
 ```{r PCA}
@@ -115,7 +133,8 @@ gdata <- data.frame(
 ggplot(data=gdata, aes(x=x, y=y, color=cells, shape=tissue, text=name)) +
   geom_point(size=3) + theme_bw()  +
   xlab(paste0("PC", 1, ": ", formatC(100 * percents[1], digits=4), "%")) +
-  ylab(paste0("PC", 2, ": ", formatC(100 * percents[2], digits=4), "%"))
+  ylab(paste0("PC", 2, ": ", formatC(100 * percents[2], digits=4), "%")) +
+  geom_text(aes(label=gdata$name), size=3, check_overlap = T, nudge_y = 3)
 
 plotPCA(vst_dds, intgroup=c("tissue", "cells")) + theme_bw()
 
@@ -125,25 +144,45 @@ plotPCA(vst_dds, intgroup=c("tissue", "cells")) + theme_bw()
 Давайте посмотрим, как выглядят результаты дифференциальной экспрессии и отсортируем их по статистике.
 
 ```{r diff_exp}
+# Tregs vs Tconv
 res <- results(dds)
-res
-mcols(res)$description
+# res
+# mcols(res)$description
 res <- res[order(res[, 4]), ]
-res
+
+# Breast tumor vs Normal breat tissue
+res2 <- results(dds2)
+res2 <- res2[order(res2[, 4]), ]
 ```
 
+# Volcano plot: add some colors
 Самый обычный способ визуализировать данные дифф.экспрессии -- это volcano plot. По оси x мы будем откладывать log fold change, а по y - adjusted p value.
 
 ```{r volcano_plot}
-gdata <- data.frame(
+# Tregs vs Tconv
+gdata_l <- data.frame(
   x=res$log2FoldChange,
-  y=-log10(res$padj)
+  y=-log10(res$padj),
+  exp_type="Tregs vs Tconv"
 )
 
-ggplot(data=gdata, aes(x=x, y=y)) +
+# Breast tumor vs Normal breat tissue
+gdata_r <- data.frame(
+  x=res2$log2FoldChange,
+  y=-log10(res2$padj),
+  exp_type="Breast tumor vs Normal breat tissue"
+)
+
+gdata <- na.omit(rbind(gdata_r, gdata_l))
+gdata$significant <- as.factor(ifelse(gdata$y > -log10(0.01), "Significant", "Not significsnt"))
+
+ggplot(data=gdata, aes(x=x, y=y, color=significant)) +
   geom_point(size=1) + theme_bw()  +
   xlab("Log fold change") +
-  ylab("Adjusted p.value")
+  ylab("Adjusted p.value") +
+  facet_grid(.~exp_type) +
+  geom_hline(yintercept=-log10(0.01), size = 0.5, linetype = 'dashed', colour = 'red') +
+  scale_color_manual(values = c('black', 'red'))
 ```
 
 Также мы можем построить тепловую карту отсортировав гены по статистике
@@ -164,6 +203,46 @@ pheatmap(to_visualise,
          annotation_col = conditions)
 dev.off()
 
+```
+
+# Визуализация пасвея GO:0007159: leukocyte cell-cell adhesion
+```{r lcca_heatmap}
+
+kkeys <- keys(org.Hs.eg.db, keytype="ENSEMBL")
+goAnno <- AnnotationDbi::select(org.Hs.eg.db, keys=kkeys, 
+                                keytype="ENSEMBL", columns=c("GOALL", "ONTOLOGYALL", "SYMBOL"))
+goAnno <- tbl_df(goAnno)
+goAnno <- filter(goAnno, GOALL=="GO:0007159")
+# or you can pick ENTREZ, or SYMBOL, or whatever you want
+genesToVisualise <- goAnno$ENSEMBL
+
+path_res <- res[intersect(rownames(res), genesToVisualise), ]
+path_res <- path_res[order(path_res[, 4]), ]
+
+to_visualise <- counts.norm[rownames(path_res), order(conditions[, 2])]
+to_visualise <- t(apply(to_visualise, 1, function(r) {
+  (r - min(r)) / (max(r) - min(r))
+}))
+
+pheatmap(to_visualise,
+         show_rownames = F, cluster_rows = F,
+         cluster_cols=F,
+         annotation_col = conditions,
+         main = "GO:0007159: leukocyte cell-cell adhesion")
+
+```
+
+# Venn diagrams, genes intersections
+
+```{r venn}
+
+cells_set <- rownames(res[!is.na(res$padj) & res$padj < 0.01, ])
+tissues_set <- rownames(res2[!is.na(res2$padj) & res2$padj < 0.01, ])
+common_genes <- intersect(cells_set, tissues_set)
+
+draw.pairwise.venn(length(cells_set), length(tissues_set), length(common_genes),
+                   category = c("Treg vs Tconv", "Breast tumor vs Normal breat tissue"),
+                   fill = c("lightcyan1", "lightpink1"))
 ```
 
 # clusterProfiler
@@ -190,7 +269,6 @@ head(merged)
 Давайте что-нибудь узнаем о дифф.экспрессированных генах!
 
 ```{r go_annot}
-
 diffExpGenes <- merged[which(merged$padj < 0.01), 8]
 universe <- as.character(merged[, 8])
 
