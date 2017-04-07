@@ -1,0 +1,96 @@
+---
+title: "pavlov_hw2"
+author: "Ivan"
+date: "4/7/2017"
+output: html_document
+---
+
+## Загружаем библиотеки
+
+```{r libs_init, message=FALSE, warning=FALSE}
+library(DESeq2)
+library(ggplot2)
+library(pheatmap)
+library(amap)
+library(dbscan)
+library(dplyr)
+options(width=120)
+```
+
+## Задание 1: иерархическая кластеризация
+
+```{r task1, cache=TRUE, message=FALSE}
+# Возьмем весь датасет с аутлаером
+counts <- read.csv("GSE89225_Illumina_counts.csv", row.names=1)
+conditions <- read.csv("conditions.csv", row.names=1)
+mart <- read.table("human_mart.txt", sep="\t", header=1, check.names = F)
+# Создадим DeseqDataSet объект (дизайн не важен)
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = conditions,
+                              design = ~ tissue + cells)
+# Оставим только 8000 экспрессированых генов
+dds <- dds[order(rowSums(counts(dds)), decreasing = T), ]
+dds <- head(dds, 8000)
+
+dds <- DESeq(dds)
+
+# Используем rlog(dds) для получения логарифмированных значений экспрессии
+log_dds <- assay(rlog(dds))
+# Посчитаем корреляции между образцами используя cor
+cor_log_dds <- cor(log_dds)
+# Посчитаем матрицу “непохожести” 1 - cor, и dist объект для этой матрицы
+invcor_log_dds <- 1 - cor_log_dds
+invcor_log_dds_dist <- dist(invcor_log_dds)
+# Сделаем кластеризацию с помощью функции hclust, используя: average, complete and single
+av_clust <- hclust(invcor_log_dds_dist, method = 'average')
+co_clust <- hclust(invcor_log_dds_dist, method = 'complete')
+si_clust <- hclust(invcor_log_dds_dist, method = 'single')
+plot(av_clust)
+plot(co_clust)
+plot(si_clust)
+```
+
+## Задание 2: K-means
+
+```{r task2, message=FALSE}
+# Возьмем весь датасет без аутлаера
+counts <- select(counts, - (treg_NBP_patient3))
+conditions <- conditions[rownames(conditions) != "treg_NBP_patient3", ]
+# Создадим DeseqDataSet объект (дизайн не важен)
+dds2 <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = conditions,
+                              design = ~ tissue + cells)
+# Оставим только 8000 экспрессированных генов
+dds2 <- dds2[order(rowSums(counts(dds2)), decreasing = T), ]
+dds2 <- head(dds2, 8000)
+# Используем rlog(dds) для получения логарифмированных значений экспрессии
+log_dds2 <- assay(rlog(dds2))
+# Используем функцию Kmeans с методом “correlation”, c количеством кластеров равным 6 и максимальным количеством итераций равным 20000
+km_log_dds2 <- Kmeans(log_dds2, centers = 6, iter.max = 20000, method = 'correlation')
+head(km_log_dds2$cluster)
+# После этого от вас потребуется эту кластеризацию изобразить на хитмапе: гены должны быть отсортированы по кластерам, а столбцы сначала по клеткам, а затем по тканям.
+to_visualise <- log_dds2[order(km_log_dds2$cluster), order(conditions$cells, conditions$tissue)]
+to_visualise <- t(apply(to_visualise, 1, function(r) {
+  (r - min(r)) / (max(r) - min(r))
+}))
+
+clusters <- data.frame(cluster = as.factor(km_log_dds2$cluster))
+pheatmap(to_visualise, 
+         show_rownames = F, cluster_rows = F,
+         cluster_cols=F,
+         annotation_col = conditions,
+         annotation_row = clusters)
+```
+
+## Задание 3: Density based algortihms
+
+```{r task3, message=FALSE}
+projection <- read.csv("projection.csv")
+dbscan_clusters <- dbscan(projection[2:3], eps = 3)
+projection$clusters <- as.factor(dbscan_clusters$cluster)
+ggplot(projection, aes(x = TSNE.1, y = TSNE.2, col = clusters))+
+  geom_point() +
+  xlab("TSNE.1") +
+  ylab("TSNE.2") +
+  theme_bw()
+```
