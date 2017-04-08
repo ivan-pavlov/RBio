@@ -1,0 +1,141 @@
+---
+title: "Class Work 08_04_17"
+author: "Ivan Pavlov"
+date: "4/8/2017"
+output: html_document
+---
+
+```{r libs, message=FALSE, warning=FALSE}
+library(DESeq2)
+library(ggplot2)
+library(pheatmap)
+library(amap)
+library(dplyr)
+library(VennDiagram)
+```
+
+## Загрузка файлов 
+```{r load}
+counts <- read.csv("GSE89633_counts.tsv", row.names=1, sep = '\t')
+conditions <- read.csv("GSE89633_conditions.tsv", row.names=1, sep = '\t')
+```
+
+## PCA plot
+
+```{r PCA}
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = conditions,
+                              design = ~ cells + conditions)
+dds <- dds[rowSums(counts(dds)) > 20, ]
+vst_dds <- vst(dds)
+# PCA
+plotPCA(vst_dds, intgroup=c("cells", "conditions")) + theme_bw()
+
+```
+
+## 8000 best genes, Kmeans, heatmap
+
+```{r 8000_km_heatmap}
+# 8000 самых БЕСТ
+dds_8000 <- dds[order(rowSums(counts(dds)), decreasing = T), ]
+dds_8000 <- head(dds_8000, 8000)
+# K means
+log_dds_8000 <- assay(rlog(dds_8000))
+km_log_dds_8000 <- Kmeans(log_dds_8000, centers = 10, iter.max = 20000, method = 'correlation')
+
+to_visualise <- log_dds_8000[order(km_log_dds_8000$cluster), order(conditions$cells, conditions$conditions)]
+to_visualise <- t(apply(to_visualise, 1, function(r) {
+  (r - min(r)) / (max(r) - min(r))
+}))
+
+clusters <- data.frame(cluster = as.factor(km_log_dds_8000$cluster))
+pheatmap(to_visualise, 
+         show_rownames = F, cluster_rows = F,
+         cluster_cols=F,
+         annotation_col = conditions,
+         annotation_row = clusters)
+```
+
+## Можем ли мы судя по PCA plot и heatmap сказать, что в этом датасете есть явные аутлаеры?
+
+Нет, явных аутлаеров не видно
+
+## Можем ли мы предположить по PCA plot, чем объяснена большая часть вариации в наших данных?
+
+Да, можно сделать предположение, что большая часть вариации наших данных объясняется подтипом клеток
+
+## Три сравнения WT vs DKO
+
+```{r WTvsDKO, message=FALSE}
+
+counts_FB <- counts[, rownames(conditions[conditions$cells == 'cell type: FB',])]
+counts_FAP <- counts[, rownames(conditions[conditions$cells == 'cell type: FAP',])]
+counts_SMP <- counts[, rownames(conditions[conditions$cells == 'cell type: SMP',])]
+
+dds_FB <- DESeqDataSetFromMatrix(countData = counts_FB,
+                              colData = conditions[conditions$cells == 'cell type: FB',],
+                              design = ~ conditions)
+dds_FB <- dds_FB[rowSums(counts(dds_FB)) > 20, ]
+dds_FAP <- DESeqDataSetFromMatrix(countData = counts_FAP,
+                              colData = conditions[conditions$cells == 'cell type: FAP',],
+                              design = ~ conditions)
+dds_FAP <- dds_FAP[rowSums(counts(dds_FAP)) > 20, ]
+dds_SMP <- DESeqDataSetFromMatrix(countData = counts_SMP,
+                              colData = conditions[conditions$cells == 'cell type: SMP',],
+                              design = ~ conditions)
+dds_SMP <- dds_SMP[rowSums(counts(dds_SMP)) > 20, ]
+
+dds_FB <- DESeq(dds_FB)
+res_FB <- results(dds_FB)
+res_FB <- res_FB[order(res_FB[, 4]), ]
+dds_FAP <- DESeq(dds_FAP)
+res_FAP <- results(dds_FAP)
+res_FAP <- res_FAP[order(res_FAP[, 4]), ]
+dds_SMP <- DESeq(dds_SMP)
+res_SMP <- results(dds_SMP)
+res_SMP <- res_SMP[order(res_SMP[, 4]), ]
+
+gdata_FB <- data.frame(
+  x=res_FB$log2FoldChange,
+  y=-log10(res_FB$padj),
+  exp_type="FB WT vs FB DKO"
+)
+gdata_FAP <- data.frame(
+  x=res_FAP$log2FoldChange,
+  y=-log10(res_FAP$padj),
+  exp_type="FAP WT vs FAP DKO"
+)
+gdata_SMP <- data.frame(
+  x=res_SMP$log2FoldChange,
+  y=-log10(res_SMP$padj),
+  exp_type="SMP WT vs SMP DKO"
+)
+gdata <- na.omit(rbind(gdata_FB, gdata_FAP, gdata_SMP))
+gdata$significant <- as.factor(ifelse(gdata$y > -log10(0.01), "Significant", "Not significant"))
+
+ggplot(data=gdata, aes(x=x, y=y, color=significant)) +
+  geom_point(size=1) + theme_bw()  +
+  xlab("Log fold change") +
+  ylab("Adjusted p.value") +
+  facet_grid(.~exp_type) +
+  geom_hline(yintercept=-log10(0.01), size = 0.5, linetype = 'dashed', colour = 'red') +
+  scale_color_manual(values = c('black', 'red'))
+
+```
+
+## Venn diagrams
+
+```{r venn}
+FB_set <- rownames(res_FB[!is.na(res_FB$padj) & res_FB$padj < 0.01, ])
+FAP_set <- rownames(res_FAP[!is.na(res_FAP$padj) & res_FAP$padj < 0.01, ])
+SMP_set <- rownames(res_SMP[!is.na(res_SMP$padj) & res_SMP$padj < 0.01, ])
+
+common_genes <- intersect(FB_set, FAP_set)
+common_genes <- intersect(common_genes, SMP_set)
+draw.triple.venn(area1 = length(FB_set), area2 = length(FAP_set), area3 = length(SMP_set),n12 = length(intersect(FB_set, FAP_set)), n23 = length(intersect(FAP_set, SMP_set)), n13 = length(intersect(FB_set, SMP_set)), n123 = length(common_genes),
+                   category = c("FB WT vs FB DKO", "FAP WT vs FAP DKO", "SMP WT vs SMP DKO"))
+```
+
+## Можем ли мы по volcano plot предположить, транксрипционное состояние каких типов клеток изменилось сильнее/слабее после двойного нокаута?
+
+Можно предположить, что транскрипционные состояния FB и FAP изменились сильнее, чем SMP
