@@ -49,12 +49,6 @@ for (i in 1:num_of_patches) {
   apply(augment_param, 1, function(x) write_aug_image(outfile, image, x[4], x[1], x[2], x[3]))
 }
 
-
-image <- readImage(sprintf("./patches/%s", 'patch1.jpg'))
-image <- readImage('./augmented_data/patch001_1_10_-8_4.jpg')
-image(image)
-length(as.numeric(image))
-
 # создаем матрицу изображений данных
 features <- 61 * 61
 dataset.size <- num_of_replicas * num_of_patches
