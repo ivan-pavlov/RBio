@@ -8,12 +8,11 @@ output: html_document
 ```{r libraries, message=F, warning=F}
 library(OpenImageR)
 library(mxnet)
-library(magick)
 ```
 
 ### Работа с данными
 
-```{r image_augб ,cache=T}
+```{r image_aug}
 # задаем параметры
 set.seed(1)
 angles <- seq(0, 360, 10)
@@ -21,11 +20,13 @@ shifts <- seq(-10, 10, 2)
 num_of_patches <- 168
 num_of_replicas <- 50
 
+dir.create('./augmented_data/')
+
 # вспомогательная функция для записи аугментированных изображений
 write_aug_image <- function(file, image, ind, angle, shift_cols, shift_rows) {
     imageAugmented <-   Augmentation(image, flip_mode = "horizontal",
              shift_cols = shift_cols, shift_rows = shift_rows,
-             rotate_angle = angle, rotate_method = 'bilinear', 
+             rotate_angle = angle, rotate_method = 'bilinear',
              zca_comps = 30,zca_epsilon = 0.1, threads = 1, verbose = F)
     writeImage(imageAugmented, sprintf("./augmented_data/%s_%i_%i_%i_%i.jpg", file, ind, angle, shift_cols, shift_rows))
     
@@ -75,7 +76,7 @@ nn.data.y <- c(rep(1, sum(patch_labels == 1) * num_of_replicas), rep(2, sum(patc
 ### Подготовка обучающей и валидирующей выборки
 ```{r train_test}
 train_amount <- 134
-# в этот момент определяется случайное разделение тесирующих и обучающих данных
+# в этот момент определяется случайное разделение тестирующих и обучающих данных
 train_set <- sample(1:num_of_patches, train_amount)
 
 train.x <- matrix(0, nrow=train_amount * num_of_replicas, ncol=features)
@@ -98,7 +99,6 @@ for (i in 1:num_of_patches) {
     internal_index_test <- internal_index_test + num_of_replicas
   }
 }
-
 # посмотрим на пропорции
 proportions <- data.frame(true.proportion= c(train_amount / num_of_patches * 100, (1 - train_amount / num_of_patches) * 100), type.1= c(sum(train.y == 1) / sum(nn.data.y == 1) * 100, sum(test.y == 1) / sum(nn.data.y == 1) * 100), type.2 = c(sum(train.y == 2) / sum(nn.data.y == 2) * 100, sum(test.y == 2) / sum(nn.data.y == 2) * 100), type.3 = c(sum(train.y == 3) / sum(nn.data.y == 3) * 100, sum(test.y == 3) / sum(nn.data.y == 3) * 100), row.names = c('train', 'test'))
 
@@ -112,8 +112,6 @@ dim(train.array) <- c(61, 61, 1, ncol(train.array))
 test.array <- t(test.x)
 dim(test.array) <- c(61, 61, 1, ncol(test.array))
 
-# new.train.array <- ((train.array / 255) - 0.5) * 2
-# new.test.array <- ((test.array / 255) - 0.5) * 2
 
 # Слой входных данных
 data <- mx.symbol.Variable('data')
@@ -145,10 +143,16 @@ model <- mx.model.FeedForward.create(nn.model,
                                        label=as.array(test.y-1)
                                      ),
                                      ctx=mx.cpu(), 
-                                     num.round = 50,
+                                     num.round = 40,
                                      optimizer="adadelta",
                                      eval.metric = mx.metric.accuracy,
                                      epoch.end.callback = mx.callback.log.train.metric(10))
 
+preds_test <- apply(predict(model, test.array), 2, which.max)
 
+preds_train <- apply(predict(model, train.array), 2, which.max)
+
+results <- data.frame(test_accuracy= sum(preds_test == test.y) / length(test.y) * 100, train_accuracy= sum(preds_train == train.y) / length(train.y) * 100)
+
+results
 ```
