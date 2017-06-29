@@ -1,0 +1,154 @@
+---
+title: "pavlov_hw5"
+author: "Ivan Pavlov"
+date: "6/27/2017"
+output: html_document
+---
+
+```{r libraries, message=F, warning=F}
+library(OpenImageR)
+library(mxnet)
+library(magick)
+```
+
+### Работа с данными
+
+```{r image_augб ,cache=T}
+# задаем параметры
+set.seed(1)
+angles <- seq(0, 360, 10)
+shifts <- seq(-10, 10, 2)
+num_of_patches <- 168
+num_of_replicas <- 50
+
+# вспомогательная функция для записи аугментированных изображений
+write_aug_image <- function(file, image, ind, angle, shift_cols, shift_rows) {
+    imageAugmented <-   Augmentation(image, flip_mode = "horizontal",
+             shift_cols = shift_cols, shift_rows = shift_rows,
+             rotate_angle = angle, rotate_method = 'bilinear', 
+             zca_comps = 30,zca_epsilon = 0.1, threads = 1, verbose = F)
+    writeImage(imageAugmented, sprintf("./augmented_data/%s_%i_%i_%i_%i.jpg", file, ind, angle, shift_cols, shift_rows))
+    
+}
+
+# создаем аугментированные изображения в папке ./augmented_data/ 
+for (i in 1:num_of_patches) {
+  if (i < 10){
+    outfile <- sprintf("patch00%d", i)
+  } else if (i < 100) {
+    outfile <- sprintf("patch0%d", i)
+  } else {
+    outfile <- sprintf("patch%d", i)
+  }
+  file <- sprintf("patch%d.jpg", i)
+  print(outfile)
+  image <- readImage(sprintf("./patches/%s", file))
+  augment_param = data.frame(angle = sample(angles, num_of_replicas, replace = T), shift_cols = sample(shifts, num_of_replicas, replace = T), shift_rows = sample(shifts, num_of_replicas, replace = T), ind = 1:num_of_replicas)
+  
+  apply(augment_param, 1, function(x) write_aug_image(outfile, image, x[4], x[1], x[2], x[3]))
+}
+
+
+image <- readImage(sprintf("./patches/%s", 'patch1.jpg'))
+image <- readImage('./augmented_data/patch001_1_10_-8_4.jpg')
+image(image)
+length(as.numeric(image))
+
+# создаем матрицу изображений данных
+features <- 61 * 61
+dataset.size <- num_of_replicas * num_of_patches
+nn.data.x <- matrix(0, nrow=dataset.size, ncol=features)
+
+index = 1
+for (file in list.files('./augmented_data/')){
+  print(sprintf('%s    %i / %i',file, index, dataset.size))
+  nn.data.x[index,] <- as.numeric(readImage(sprintf("./augmented_data/%s", file)))
+  index = index + 1
+}
+
+# создаем вектор решений
+patch_labels <- read.csv('patch_labels.csv', header = F)
+nn.data.y <- c(rep(1, sum(patch_labels == 1) * num_of_replicas), rep(2, sum(patch_labels == 2) * num_of_replicas), rep(3, sum(patch_labels == 3) * num_of_replicas))
+  
+```
+
+### Подготовка обучающей и валидирующей выборки
+```{r train_test}
+train_amount <- 134
+# в этот момент определяется случайное разделение тесирующих и обучающих данных
+train_set <- sample(1:num_of_patches, train_amount)
+
+train.x <- matrix(0, nrow=train_amount * num_of_replicas, ncol=features)
+train.y <- vector(length = train_amount * num_of_replicas)
+
+test.x  <- matrix(0, nrow=(num_of_patches - train_amount) * num_of_replicas, ncol=features)
+test.y <- vector(length = (num_of_patches - train_amount) * num_of_replicas)
+  
+internal_index_train = 1
+internal_index_test = 1
+for (i in 1:num_of_patches) {
+  print(i)
+  if (i %in% train_set) {
+    train.x[internal_index_train:(internal_index_train + num_of_replicas - 1),] <- nn.data.x[(i*num_of_replicas - num_of_replicas + 1):(i*num_of_replicas),]
+    train.y[internal_index_train:(internal_index_train + num_of_replicas - 1)] <- nn.data.y[(i*num_of_replicas - num_of_replicas + 1):(i*num_of_replicas)]
+    internal_index_train <- internal_index_train + num_of_replicas
+  } else {
+    test.x[internal_index_test:(internal_index_test + num_of_replicas - 1),] <- nn.data.x[(i*num_of_replicas - num_of_replicas + 1):(i*num_of_replicas),]
+    test.y[internal_index_test:(internal_index_test + num_of_replicas - 1)] <- nn.data.y[(i*num_of_replicas - num_of_replicas + 1):(i*num_of_replicas)]
+    internal_index_test <- internal_index_test + num_of_replicas
+  }
+}
+
+# посмотрим на пропорции
+proportions <- data.frame(true.proportion= c(train_amount / num_of_patches * 100, (1 - train_amount / num_of_patches) * 100), type.1= c(sum(train.y == 1) / sum(nn.data.y == 1) * 100, sum(test.y == 1) / sum(nn.data.y == 1) * 100), type.2 = c(sum(train.y == 2) / sum(nn.data.y == 2) * 100, sum(test.y == 2) / sum(nn.data.y == 2) * 100), type.3 = c(sum(train.y == 3) / sum(nn.data.y == 3) * 100, sum(test.y == 3) / sum(nn.data.y == 3) * 100), row.names = c('train', 'test'))
+
+proportions
+```
+
+### Архитектура нейронной сети
+```{r nn_arch}
+train.array <- t(train.x)
+dim(train.array) <- c(61, 61, 1, ncol(train.array))
+test.array <- t(test.x)
+dim(test.array) <- c(61, 61, 1, ncol(test.array))
+
+# new.train.array <- ((train.array / 255) - 0.5) * 2
+# new.test.array <- ((test.array / 255) - 0.5) * 2
+
+# Слой входных данных
+data <- mx.symbol.Variable('data')
+# Сверточный слой 1
+conv.1 <- mx.symbol.Convolution(data = data, kernel = c(5, 5), num_filter = 10)
+# Активационный слой 1
+tanh.1 <- mx.symbol.Activation(data = conv.1, act_type = "tanh")
+# Слой пулинга 1
+pool.1 <- mx.symbol.Pooling(data=tanh.1, kernel=c(2, 2), stride=c(2, 2), pool.type="max")
+# Сверточный слой 2
+conv.2 <- mx.symbol.Convolution(data = pool.1, kernel = c(5, 5), num_filter = 10)
+# Активационный слой 2
+tanh.2 <- mx.symbol.Activation(data = conv.2, act_type = "tanh")
+# Слой пулинга 2
+pool.2 <- mx.symbol.Pooling(data = tanh.2, kernel=c(2, 2), stride=c(2, 2), pool.type="max")
+# FullyConnected слой 1
+fc.1 <- mx.symbol.FullyConnected(data = pool.2, num_hidden = 3)
+# Softmax выходной слой
+nn.model <- mx.symbol.SoftmaxOutput(data = fc.1)
+
+graph.viz(nn.model)
+
+mx.set.seed(1)
+model <- mx.model.FeedForward.create(nn.model, 
+                                     X=train.array, 
+                                     y=as.array(train.y-1),
+                                     eval.data = list(
+                                       data=test.array,
+                                       label=as.array(test.y-1)
+                                     ),
+                                     ctx=mx.cpu(), 
+                                     num.round = 50,
+                                     optimizer="adadelta",
+                                     eval.metric = mx.metric.accuracy,
+                                     epoch.end.callback = mx.callback.log.train.metric(10))
+
+
+```
