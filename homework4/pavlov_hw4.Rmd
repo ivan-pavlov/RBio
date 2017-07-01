@@ -1,0 +1,203 @@
+---
+title: "HW4"
+author: "Ivan Pavlov"
+date: "7/1/2017"
+output: html_document
+---
+## Библиотеки
+```{r setup, message=FALSE, warning=FALSE}
+library(randomForest)
+library(rpart)
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+library(dplyr)
+library(ggplot2)
+```
+
+## Данные
+``` {r data}
+set.seed(1)
+ages <- read.table("ages.tsv", sep="\t", header=1)
+head(ages)
+
+methylation <- read.table("methylation.tsv", sep="\t", header=1, row.names = 1, na.strings = "NA")
+sum(is.na(methylation))
+methylation[is.na(methylation)] = 0
+print(methylation[1:5, 1:5])
+
+```
+
+## Предподготовка данных, выбор переменных
+``` {r feature_selecton}
+cors <- apply(methylation, 1, function(x) cor(as.numeric(x[4:length(x)]), ages$Age))
+best_cors <- labels(head(sort(abs(cors),decreasing = T), 10))
+cors[best_cors]
+
+forest_data <- data.frame(t(methylation[best_cors, 4:length(methylation)]), Age = ages$Age)
+
+train.set <- sample(1:50, 40)
+test.set <- (1:50)[-train.set]
+
+train.data <- forest_data[train.set,]
+test.data <- forest_data[test.set,]
+
+```
+
+## Функция обертка для случайного леса
+``` {r forest_setup}
+wrapper <- function(train.data, train.response, test.data, test.response, runs.number=50, ...) {
+  rmse_df <- data.frame(train_rmse = vector(length = runs.number), test_rmse = vector(length = runs.number))
+  for (i in 1:runs.number) {
+    fit.rf <- randomForest(Age ~ ., data=train.data, ...)
+    
+    train.preds <- predict(fit.rf, train.data)
+    rmse_df$train_rmse[i] <- sqrt(sum((train.response - train.preds) ^ 2) / length(train.preds))
+    
+    test.preds <- predict(fit.rf, test.data)
+    rmse_df$test_rmse[i] <- sqrt(sum((test.response - test.preds) ^ 2) / length(test.preds))
+  }
+  res <- c(mean(rmse_df$train_rmse), mean(rmse_df$test_rmse))
+  names(res) <- c('train_error', 'test_error')
+  return(res)
+}
+```
+
+## Пробные запуски
+
+``` {r try}
+errors.defaults <- wrapper(train.data, train.data$Age, test.data, test.data$Age, 50)
+print(errors.defaults)
+# теперь с одним деревом
+errors.onetree <- wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=1)
+print(errors.onetree)
+# немного переобучения
+errors.overfit <- wrapper(train.data, train.data$Age, test.data, test.data$Age, 50,
+                          nodesize=1, replace=F, sampsize=40, mtry=10, ntree=100)
+print(errors.overfit)
+```
+
+## Оптимизация ntree
+
+```{r ntree}
+res_df <- data.frame(ntree= seq(1, 1000, 10))
+
+errors.ntree <- sapply(res_df$ntree, function(x) wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=x))
+
+res_df$train_error <- errors.ntree[1,]
+res_df$test_error <- errors.ntree[2,]
+
+ggplot(res_df, aes(x = ntree)) +
+  geom_line(aes(y = train_error, col = 'Train')) +
+  geom_line(aes(y = test_error, col = 'Test')) +
+  ggtitle('Оптимизация ntree') +
+  ylab('Error') 
+
+# ntree=125 выглядит разумным выбором
+```
+
+## Оптимизация REPLACE и SAMPSIZE
+
+```{r sampsize}
+res_df <- data.frame(sampsize= 1:40)
+
+errors.sampsize_F <- sapply(res_df$sampsize, function(x) wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=10, nodesize=1, replace=F, sampsize=x))
+
+res_df$train_error_F <- errors.sampsize_F[1,]
+res_df$test_error_F <- errors.sampsize_F[2,]
+
+errors.sampsize_T <- sapply(res_df$sampsize, function(x) wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=10, nodesize=1, replace=T, sampsize=x))
+
+res_df$train_error_T <- errors.sampsize_T[1,]
+res_df$test_error_T <- errors.sampsize_T[2,]
+
+ggplot(res_df, aes(x = sampsize)) +
+  geom_line(aes(y = train_error_F, col = 'Train Replace=F')) +
+  geom_line(aes(y = test_error_F, col = 'Test Replace=F')) +
+  geom_line(aes(y = train_error_T, col = 'Train Replace=T')) +
+  geom_line(aes(y = test_error_T, col = 'Test Replace=T')) +
+  ggtitle('Оптимизация REPLACE и SAMPSIZE') +
+  ylab('Error') 
+
+# Без замены переобучение происходит быстрее
+# Кажется, можно взять sampsize=40
+```
+
+## Оптимизация nodesize
+
+```{r nodesize}
+res_df <- data.frame(nodesize= 1:40)
+
+errors.nodesize <- sapply(res_df$nodesize, function(x) wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=10, nodesize=x, replace=T, sampsize=40))
+
+res_df$train_error <- errors.nodesize[1,]
+res_df$test_error <- errors.nodesize[2,]
+
+ggplot(res_df, aes(x = nodesize)) +
+  geom_line(aes(y = train_error, col = 'Train')) +
+  geom_line(aes(y = test_error, col = 'Test')) +
+  ggtitle('Оптимизация nodesize') +
+  ylab('Error') 
+
+# Можно взять nodesize=3
+```
+
+## Оптимизация MTRY
+
+```{r mtry}
+res_df <- data.frame(mtry= 1:10)
+
+errors.mtry <- sapply(res_df$mtry, function(x) wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=x, nodesize=3, replace=T, sampsize=40))
+
+res_df$train_error <- errors.mtry[1,]
+res_df$test_error <- errors.mtry[2,]
+
+ggplot(res_df, aes(x = mtry)) +
+  geom_line(aes(y = train_error, col = 'Train')) +
+  geom_line(aes(y = test_error, col = 'Test')) +
+  ggtitle('Оптимизация mtry') +
+  ylab('Error') 
+
+# Можно взять mtry=2
+```
+
+## CROSS VALIDATION
+
+```{r cross_validation}
+
+# подобранные параметры
+cross.validation <- matrix(sample(1:50, 50), nrow=5, ncol=10)
+
+cross.results <- apply(cross.validation, 1, function(test.sample){
+  # using each part as testing dataset
+  # using rest of the dataset as training dataset
+  train.sample <- (1:50)[-test.sample]
+  train.data <- forest_data[train.sample, ]
+  test.data <- forest_data[test.sample, ]
+  
+  # calculating RMSE for every part and default random forest
+  return(wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=2, nodesize=3, replace=T, sampsize=40))
+})
+
+comparison <- data.frame(optimized.parameters = rowMeans(cross.results))
+
+# стандартные параметры
+cross.validation <- matrix(sample(1:50, 50), nrow=5, ncol=10)
+
+cross.results <- apply(cross.validation, 1, function(test.sample){
+  # using each part as testing dataset
+  # using rest of the dataset as training dataset
+  train.sample <- (1:50)[-test.sample]
+  train.data <- forest_data[train.sample, ]
+  test.data <- forest_data[test.sample, ]
+  
+  # calculating RMSE for every part and default random forest
+  return(wrapper(train.data, train.data$Age, test.data, test.data$Age, 50))
+})
+
+comparison$standart.parameters <- rowMeans(cross.results)
+
+comparison
+```
+
+### С подобранными параметрами работает немного лучше, неплохо
