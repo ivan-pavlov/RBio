@@ -120,7 +120,7 @@ ggplot(res_df, aes(x = sampsize)) +
   ylab('Error') 
 
 # Без замены переобучение происходит быстрее
-# Кажется, можно взять sampsize=40
+# Кажется, можно взять sampsize=13, на пересечении test и train
 ```
 
 ## Оптимизация nodesize
@@ -128,7 +128,7 @@ ggplot(res_df, aes(x = sampsize)) +
 ```{r nodesize}
 res_df <- data.frame(nodesize= 1:40)
 
-errors.nodesize <- sapply(res_df$nodesize, function(x) wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=10, nodesize=x, replace=T, sampsize=40))
+errors.nodesize <- sapply(res_df$nodesize, function(x) wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=10, nodesize=x, replace=T, sampsize=13))
 
 res_df$train_error <- errors.nodesize[1,]
 res_df$test_error <- errors.nodesize[2,]
@@ -139,7 +139,7 @@ ggplot(res_df, aes(x = nodesize)) +
   ggtitle('Оптимизация nodesize') +
   ylab('Error') 
 
-# Можно взять nodesize=3
+# Можно взять nodesize=1
 ```
 
 ## Оптимизация MTRY
@@ -147,7 +147,7 @@ ggplot(res_df, aes(x = nodesize)) +
 ```{r mtry}
 res_df <- data.frame(mtry= 1:10)
 
-errors.mtry <- sapply(res_df$mtry, function(x) wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=x, nodesize=3, replace=T, sampsize=40))
+errors.mtry <- sapply(res_df$mtry, function(x) wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=x, nodesize=1, replace=T, sampsize=13))
 
 res_df$train_error <- errors.mtry[1,]
 res_df$test_error <- errors.mtry[2,]
@@ -176,7 +176,7 @@ cross.results <- apply(cross.validation, 1, function(test.sample){
   test.data <- forest_data[test.sample, ]
   
   # calculating RMSE for every part and default random forest
-  return(wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=2, nodesize=3, replace=T, sampsize=40))
+  return(wrapper(train.data, train.data$Age, test.data, test.data$Age, 50, ntree=125, mtry=2, nodesize=1, replace=T, sampsize=13))
 })
 
 comparison <- data.frame(optimized.parameters = rowMeans(cross.results))
@@ -200,4 +200,4 @@ comparison$standart.parameters <- rowMeans(cross.results)
 comparison
 ```
 
-### С подобранными параметрами работает немного лучше, неплохо
+### Так, к сожалению, оптимизация параметров не сильно помогла. Можно использовать стандартные параметры.
